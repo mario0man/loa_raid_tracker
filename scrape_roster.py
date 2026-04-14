@@ -4,7 +4,7 @@ import time
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     page = browser.new_page()
-    page.goto('https://lostark.bible/character/NA/Sunileah/roster', timeout=60000)
+    page.goto('https://lostark.bible/character/NA/Biblethis/roster', timeout=60000)
     page.wait_for_load_state('networkidle')
     time.sleep(2)
     

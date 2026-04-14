@@ -57,8 +57,8 @@ def get_roster_characters(page, main_character):
     roster_url = f"{BASE_URL}/character/NA/{main_character}/roster"
     print(f"Fetching roster for {main_character}...")
     page.goto(roster_url, timeout=60000)
-    page.wait_for_load_state("networkidle")
-    time.sleep(1)
+    page.wait_for_load_state("domcontentloaded")
+    time.sleep(2)
 
     # Roster character links are like /character/NA/{Name}
     # The page also has navigation tab links (e.g. "Character", "Roster") with the same href pattern.
@@ -104,8 +104,8 @@ def get_exact_timestamp(page, log_url):
     """
     full_url = f"{BASE_URL}{log_url}" if log_url.startswith("/") else log_url
     page.goto(full_url, timeout=60000)
-    page.wait_for_load_state("networkidle")
-    time.sleep(0.5)
+    page.wait_for_load_state("domcontentloaded")
+    time.sleep(1)
 
     body_text = page.locator("body").inner_text()
     now = datetime.now(PACIFIC_TZ)
@@ -149,7 +149,8 @@ def scrape_character_logs(page, character_name):
     url = f"{BASE_URL}/character/NA/{character_name}/logs"
     print(f"  Loading logs for {character_name}...")
     page.goto(url, timeout=60000)
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("domcontentloaded")
+    time.sleep(1)
 
     # Scroll to the bottom to load everything
     last_height = page.evaluate("document.body.scrollHeight")
@@ -288,7 +289,7 @@ def print_raid_logs(main_character):
         for char_name, item_level in character_names:
             row = [char_name, item_level]
             for raid_col in all_raid_cols:
-                status = char_raid_status.get((char_name, raid_col), "—")
+                status = char_raid_status.get((char_name, raid_col), "➖")
                 row.append(status)
             rows.append(row)
 
