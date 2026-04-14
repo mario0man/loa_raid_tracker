@@ -58,22 +58,28 @@ def get_roster_characters(page, main_character):
     print(f"Fetching roster for {main_character}...")
     page.goto(roster_url, timeout=60000)
     page.wait_for_load_state("domcontentloaded")
-    time.sleep(2)
+    # MOD 3: selector-based wait instead of fixed sleep
+    page.wait_for_selector('a[href*="/character/"]', timeout=15000, state="attached")
 
-    # Roster character links are like /character/NA/{Name}
-    # The page also has navigation tab links (e.g. "Character", "Roster") with the same href pattern.
-    # We distinguish roster cards from nav tabs by checking that the link text starts with the character name.
-    links = page.locator('a[href*="/character/"]')
+    # MOD 2: Use JS to extract all roster link data in one evaluate call
+    raw_links = page.evaluate("""() => {
+        const links = document.querySelectorAll('a[href*="/character/"]');
+        return Array.from(links).map(a => ({
+            href: a.getAttribute('href') || '',
+            text: a.innerText.trim()
+        }));
+    }""")
+
     characters = []
     seen = set()
-    for i in range(links.count()):
-        href = links.nth(i).get_attribute("href") or ""
+    for link_data in raw_links:
+        href = link_data['href']
+        raw_text = link_data['text']
         # Only match exact character page links: /character/NA/{Name}
         match = re.match(r'^/character/NA/([^/]+)$', href)
         if match:
             name = match.group(1)
             if name not in seen:
-                raw_text = links.nth(i).inner_text().strip()
                 # Roster cards start with the character name; nav tabs say "Character", "Roster", etc.
                 if not raw_text.startswith(name):
                     continue
@@ -103,11 +109,35 @@ def get_exact_timestamp(page, log_url):
     Returns a timezone-aware datetime in Pacific time, or None.
     """
     full_url = f"{BASE_URL}{log_url}" if log_url.startswith("/") else log_url
-    page.goto(full_url, timeout=60000)
-    page.wait_for_load_state("domcontentloaded")
-    time.sleep(1)
+    # Retry page.goto up to 3 times in case of server rate-limiting / timeout
+    for attempt in range(3):
+        try:
+            page.goto(full_url, timeout=60000)
+            page.wait_for_load_state("domcontentloaded")
+            break
+        except Exception as e:
+            if attempt < 2:
+                print(f"    ⚠ Timeout loading {full_url}, retrying ({attempt+2}/3)...")
+                time.sleep(2)
+            else:
+                print(f"    ⚠ Failed to load {full_url} after 3 attempts: {e}")
+                return None
 
-    body_text = page.locator("body").inner_text()
+    # MOD 3: Wait until a timestamp pattern actually appears in the body text.
+    # This is more robust than waiting for a selector, since the timestamp is
+    # rendered dynamically and may not be present immediately after DOMContentLoaded.
+    try:
+        page.wait_for_function(r"""() => {
+            const text = document.body.innerText;
+            return /\d{2}\/\d{2}\/\d{4}\s+\d{1,2}:\d{2}\s+[AP]M/.test(text)
+                || /Today\s*@\s*\d{1,2}:\d{2}\s+[AP]M/i.test(text)
+                || /Yesterday\s*@\s*\d{1,2}:\d{2}\s+[AP]M/i.test(text);
+        }""", timeout=10000)
+    except Exception:
+        pass  # Proceed anyway — body text will be checked below
+
+    # MOD 2: Use JS to extract body text in one call
+    body_text = page.evaluate("() => document.body.innerText")
     now = datetime.now(PACIFIC_TZ)
 
     # Try absolute format: MM/DD/YYYY HH:MM AM/PM
@@ -150,45 +180,72 @@ def scrape_character_logs(page, character_name):
     print(f"  Loading logs for {character_name}...")
     page.goto(url, timeout=60000)
     page.wait_for_load_state("domcontentloaded")
-    time.sleep(1)
+    # MOD 3: selector-based wait instead of fixed sleep
+    # Some characters may have no logs at all, so use a short timeout and handle gracefully
+    has_logs = True
+    try:
+        page.wait_for_selector('div.hover\\:bg-surface-900', timeout=5000, state="attached")
+    except Exception:
+        has_logs = False
+
+    if not has_logs:
+        print(f"    → No log entries found for {character_name}.")
+        return []
 
     # Scroll to the bottom to load everything
+    # MOD 4: reduced scroll delay from 1.5s to 0.5s
     last_height = page.evaluate("document.body.scrollHeight")
     while True:
         page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1.5)
+        time.sleep(0.5)
         new_height = page.evaluate("document.body.scrollHeight")
         if new_height == last_height:
             break
         last_height = new_height
 
-    # Get all the log rows
-    log_rows = page.locator("div.hover\\:bg-surface-900")
-    count = log_rows.count()
+    # MOD 2: Use JS to extract all log row data in a single evaluate call
+    # Also extracts the relative timestamp text from each row
+    raw_entries_data = page.evaluate(r"""() => {
+        const rows = document.querySelectorAll('div.hover\\:bg-surface-900');
+        return Array.from(rows).map(row => {
+            const link = row.querySelector('a');
+            const bossName = link ? link.innerText.trim() : '';
+            const logHref = link ? (link.getAttribute('href') || '') : '';
+            
+            // Extract gate tag from <p> elements
+            const pElements = row.querySelectorAll('p');
+            let gateTag = '';
+            let raidBase = '';
+            let gateNumber = 0;
+            for (const p of pElements) {
+                const pText = p.innerText.trim();
+                const gateMatch = pText.match(/^(.+?)\s+G(\d+)$/);
+                if (gateMatch) {
+                    gateTag = pText;
+                    raidBase = gateMatch[1];
+                    gateNumber = parseInt(gateMatch[2]);
+                    break;
+                }
+            }
+            
+            // Extract relative timestamp from row text (e.g. "6 hours ago", "2 days ago")
+            const rowText = row.innerText;
+            const relTimeMatch = rowText.match(/(\d+\s+(?:sec|second|mins?|minutes?|hrs?|hours?|days?|weeks?|months?)\s+ago)/i);
+            const relativeTime = relTimeMatch ? relTimeMatch[0] : '';
+            
+            return { bossName, logHref, gateTag, raidBase, gateNumber, relativeTime };
+        });
+    }""")
 
     raw_entries = []
+    for entry_data in raw_entries_data:
+        boss_name = entry_data['bossName']
+        gate_tag = entry_data['gateTag']
+        raid_base = entry_data['raidBase']
+        gate_number = entry_data['gateNumber']
+        log_href = entry_data['logHref']
+        relative_time = entry_data['relativeTime']
 
-    for i in range(count):
-        row = log_rows.nth(i)
-        
-        link_el = row.locator("a")
-        boss_name = link_el.inner_text().strip()
-        log_href = link_el.get_attribute("href") or ""
-        
-        # Extract the gate tag (e.g. "Kazeros G2") from <p> elements in the row
-        gate_tag = ""
-        gate_number = 0
-        raid_base = ""
-        p_elements = row.locator("p")
-        for j in range(p_elements.count()):
-            p_text = p_elements.nth(j).inner_text().strip()
-            gate_match = re.match(r'^(.+?)\s+G(\d+)$', p_text)
-            if gate_match:
-                gate_tag = p_text
-                raid_base = gate_match.group(1)
-                gate_number = int(gate_match.group(2))
-                break
-        
         if boss_name:
             raid_display = f"{boss_name} ({gate_tag})" if gate_tag else boss_name
             raw_entries.append({
@@ -197,6 +254,7 @@ def scrape_character_logs(page, character_name):
                 "raid_base": raid_base,
                 "gate_number": gate_number,
                 "log_href": log_href,
+                "relative_time": relative_time,
             })
 
     # Keep only the most recent completion of each raid
@@ -211,14 +269,53 @@ def scrape_character_logs(page, character_name):
             if rb:
                 seen_raids.add(rb)
 
-    # Visit each filtered log page to get the exact timestamp
-    print(f"    → {len(filtered)} most-recent raid entries, fetching exact timestamps...")
+    # Determine the reset boundary window for the optimization:
+    # Only visit individual log pages if the relative timestamp places the log
+    # on Tuesday or Wednesday (the weekly reset boundary at Wed 3AM Pacific).
+    # For all other days, the relative timestamp is precise enough.
+    reset_time = get_last_weekly_reset()
+    now_pacific = datetime.now(PACIFIC_TZ)
+
+    # The window where exact timestamps are needed: Tuesday 00:00 to Wednesday 23:59:59
+    # (the reset is at Wed 3AM, so any log on Tue or Wed could be near the boundary)
+    tues_start = reset_time - timedelta(days=1)  # Tuesday 3AM
+    tues_start = tues_start.replace(hour=0, minute=0, second=0, microsecond=0)  # Tue 00:00
+    wed_end = reset_time.replace(hour=23, minute=59, second=59, microsecond=999999)  # Wed 23:59:59
+
+    exact_count = 0
+    relative_count = 0
+
     for entry in filtered:
-        if entry["log_href"]:
+        # Parse the relative timestamp to get an approximate datetime
+        approx_dt = calculate_absolute_datetime(entry.get("relative_time", ""))
+
+        # Check if the approximate datetime falls near the reset boundary (Tue/Wed)
+        needs_exact = False
+        if approx_dt is None:
+            # Can't parse relative time — must visit the log page
+            needs_exact = True
+        elif tues_start <= approx_dt <= wed_end:
+            # Log is on Tuesday or Wednesday — could be near the Wed 3AM boundary
+            needs_exact = True
+        elif approx_dt >= reset_time:
+            # Clearly after the reset — no need for exact timestamp
+            entry["completion_dt"] = approx_dt
+            relative_count += 1
+            continue
+        else:
+            # Clearly before the reset — no need for exact timestamp
+            entry["completion_dt"] = approx_dt
+            relative_count += 1
+            continue
+
+        if needs_exact and entry["log_href"]:
             exact_dt = get_exact_timestamp(page, entry["log_href"])
             entry["completion_dt"] = exact_dt
+            exact_count += 1
         else:
-            entry["completion_dt"] = None
+            entry["completion_dt"] = approx_dt
+
+    print(f"    → {len(filtered)} raids: {exact_count} exact lookups, {relative_count} from relative time")
 
     return filtered
 
