@@ -228,12 +228,28 @@ def print_raid_logs(main_character):
     character_names.sort(key=lambda c: (-float(c[1]), c[0]))
 
     # 6. Build completion status lookup
-    char_raid_status = {}
+    # A raid is complete only if ALL gates the character has done were completed this week
+    raid_has_logs = set()
+    char_raid_gates = {}
+    gates_this_week = {}
     for entry in all_entries:
         key = (entry["character"], entry["raid_name"])
-        if key not in char_raid_status:
-            dt = entry["completion_dt"]
-            char_raid_status[key] = "✅" if dt >= reset_time else "❌"
+        raid_has_logs.add(key)
+        if key not in char_raid_gates:
+            char_raid_gates[key] = set()
+        char_raid_gates[key].add(entry["gate_number"])
+        if entry["completion_dt"] >= reset_time:
+            if key not in gates_this_week:
+                gates_this_week[key] = set()
+            gates_this_week[key].add(entry["gate_number"])
+
+    char_raid_status = {}
+    for key in raid_has_logs:
+        done = gates_this_week.get(key, set())
+        if len(done) == len(char_raid_gates[key]):
+            char_raid_status[key] = "✅"
+        else:
+            char_raid_status[key] = "❌"
 
     # 7. Build crosstab table
     header = ["Character", "iLvl"] + raid_names
@@ -272,13 +288,9 @@ def print_raid_logs(main_character):
     print(separator)
 
     # Summary
-    unique_completed = {
-        (e["character"], e["raid_name"])
-        for e in all_entries
-        if e["completion_dt"] >= reset_time
-    }
+    completed_count = sum(1 for v in char_raid_status.values() if v == "✅")
     total_cells = len(character_names) * len(raid_names)
-    print(f"\nCompleted this week: {len(unique_completed)}/{total_cells} (across {len(character_names)} characters, {len(raid_names)} raids)")
+    print(f"\nCompleted this week: {completed_count}/{total_cells} (across {len(character_names)} characters, {len(raid_names)} raids)")
 
 
 if __name__ == "__main__":
