@@ -10,6 +10,24 @@ import re
 
 PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
 
+ACCENT_MAP = {
+    'a': ['à', 'á', 'â', 'ä', 'ã'],
+    'e': ['è', 'é', 'ê', 'ë'],
+    'i': ['ì', 'í', 'î', 'ï'],
+    'o': ['ò', 'ó', 'ô', 'ö', 'õ'],
+    'u': ['ù', 'ú', 'û', 'ü'],
+}
+
+
+def generate_accent_variants(name):
+    """Generate single-vowel accent substitutions for a name."""
+    variants = set()
+    for i, ch in enumerate(name.lower()):
+        if ch in ACCENT_MAP:
+            for acc in ACCENT_MAP[ch]:
+                variants.add(name[:i] + acc + name[i + 1:])
+    return list(variants)
+
 
 @st.cache_data(ttl=3600)
 def get_boss_mapping():
@@ -18,7 +36,7 @@ def get_boss_mapping():
 
 @st.cache_data(ttl=300)
 def get_roster(main_character):
-    html = fetch_page(f"/character/NA/{main_character}/roster")
+    html = fetch_page(f"/character/NA/{quote(main_character)}/roster")
     if not html:
         return []
     return extract_roster(html)
@@ -30,13 +48,31 @@ def get_character_logs(char_name, boss_to_raid):
     return _fetch_character_logs(char_name, boss_to_raid)
 
 
-def build_table(main_character):
+def try_accent_variants(character):
+    """Try accent variants for a character name. Returns list of (name, roster) with matches."""
+    variants = generate_accent_variants(character)
+    if not variants:
+        return []
+    found = []
+    with ThreadPoolExecutor(max_workers=min(len(variants), 8)) as executor:
+        futures = {executor.submit(get_roster, v): v for v in variants}
+        for future in as_completed(futures):
+            vname = futures[future]
+            vroster = future.result()
+            if vroster:
+                found.append((vname, vroster))
+    return found
+
+
+def build_table(main_character, roster=None, _skip_no_logs=False):
     boss_to_raid, raid_order = get_boss_mapping()
     if not boss_to_raid:
         st.error("Failed to fetch raid mapping from lostark.bible.")
         return None
 
-    character_names = get_roster(main_character)
+    if roster is None:
+        roster = get_roster(main_character)
+    character_names = roster
     if not character_names:
         st.error(f"No characters found for **{main_character}**.")
         return None
@@ -53,6 +89,8 @@ def build_table(main_character):
             all_entries.extend(entries)
 
     if not all_entries:
+        if _skip_no_logs:
+            return None
         st.warning("No log entries found for any character.")
         return None
 
@@ -127,11 +165,67 @@ with col_btn:
     search_clicked = st.button("Search", type="primary")
 
 if (character and st.session_state.get("last_search") != character) or (search_clicked and character):
+    # Clear stale state from previous searches
+    st.session_state.pop("accent_matches", None)
+    st.session_state.pop("accent_data", None)
     st.session_state["last_search"] = character
     character = character[0].upper() + character[1:].lower()
-    with st.spinner(f"Fetching data for {character}..."):
-        data = build_table(character)
 
+    def _handle_found(found):
+        """Process accent variant matches. Always shows selection UI."""
+        if found:
+            st.session_state["accent_matches"] = found
+            return None, None
+        return None, None
+
+    with st.spinner(f"Fetching data for {character}..."):
+        resolved_name = character
+        roster = get_roster(character)
+
+        # Fallback 1: empty roster → try accent variants
+        if not roster:
+            found = try_accent_variants(character)
+            if found:
+                resolved_name, roster = _handle_found(found)
+            else:
+                st.error(f"No characters found for **{character}**.")
+                resolved_name = None
+
+    # Try building table (only if we have a roster)
+    data = None
+    if resolved_name and roster:
+        data = build_table(resolved_name, roster=roster)
+
+    # Fallback 2: roster exists but no log entries → try accent variants
+    if resolved_name and roster and data is None and not st.session_state.get("accent_matches"):
+        found = try_accent_variants(character)
+        if found:
+            resolved_name, roster = _handle_found(found)
+            if resolved_name:
+                data = build_table(resolved_name, roster=roster)
+
+    if data:
+        st.session_state["accent_data"] = data
+    elif not st.session_state.get("accent_matches"):
+        if resolved_name is None and not roster:
+            pass  # already showed "no characters found" error
+        else:
+            st.error(f"No log entries found for **{character}** or its variants.")
+
+# Handle multiple accent matches (persists across reruns until user picks)
+if st.session_state.get("accent_matches"):
+    matches = st.session_state["accent_matches"]
+    st.warning("Multiple characters match. Click one to continue:")
+
+    for m_name, m_roster in matches:
+        main_ilvl = next((ilvl for cn, ilvl in m_roster if cn == m_name), "0")
+        if st.button(f"{m_name}  —  iLvl {main_ilvl}  —  {len(m_roster)} characters", key=f"accent_{m_name}"):
+            del st.session_state["accent_matches"]
+            st.session_state["accent_data"] = build_table(m_name, roster=m_roster)
+            st.rerun()
+
+if st.session_state.get("accent_data"):
+    data = st.session_state["accent_data"]
     if data:
         st.subheader("Weekly Completion Status")
         reset = data["reset_time"]
