@@ -179,7 +179,7 @@ if (character and st.session_state.get("last_search") != character) or (search_c
         st.markdown(
             "<span style='color:#4caf50'>✅</span> Completed this week &nbsp;&nbsp; "
             "<span style='color:#f44336'>❌</span> Not yet completed this week &nbsp;&nbsp; "
-            "<span style='color:#666'>➖</span> No prior logs",
+            "<span style='color:#666'>➖</span> No prior logs in the last 3 weeks",
             unsafe_allow_html=True,
         )
 
