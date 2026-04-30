@@ -58,9 +58,12 @@ def try_accent_variants(character):
         futures = {executor.submit(get_roster, v): v for v in variants}
         for future in as_completed(futures):
             vname = futures[future]
-            vroster = future.result()
-            if vroster:
-                found.append((vname, vroster))
+            try:
+                vroster = future.result()
+                if vroster:
+                    found.append((vname, vroster))
+            except Exception:
+                pass
     return found
 
 
@@ -157,18 +160,18 @@ st.markdown(
     "for all characters on your roster."
 )
 
-col_text, col_btn = st.columns([5, 1])
-with col_text:
-    character = st.text_input("Enter your character name. MUST HAVE PUBLIC LOGS ENABLED.")
-with col_btn:
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-    search_clicked = st.button("Search", type="primary")
+with st.form("search_form", clear_on_submit=False):
+    col_text, col_btn = st.columns([5, 1])
+    with col_text:
+        character = st.text_input("Enter your character name. MUST HAVE PUBLIC LOGS ENABLED.")
+    with col_btn:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        search_clicked = st.form_submit_button("Search", type="primary")
 
-if (character and st.session_state.get("last_search") != character) or (search_clicked and character):
+if search_clicked and character:
     # Clear stale state from previous searches
     st.session_state.pop("accent_matches", None)
     st.session_state.pop("accent_data", None)
-    st.session_state["last_search"] = character
     character = character[0].upper() + character[1:].lower()
 
     def _handle_found(found):

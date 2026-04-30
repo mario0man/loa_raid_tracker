@@ -28,10 +28,10 @@ def fetch_page(path):
             return resp.text
         except requests.RequestException as e:
             if attempt < 2:
-                print(f"    ⚠ Request failed, retrying ({attempt + 2}/3): {e}")
-                time.sleep(2)
+                print(f"    [!] Request failed, retrying ({attempt + 2}/3): {e}")
+                time.sleep(3)
             else:
-                print(f"    ⚠ Failed after 3 attempts: {e}")
+                print(f"    [!] Failed after 3 attempts: {e}")
                 return ""
 
 
