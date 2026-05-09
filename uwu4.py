@@ -12,6 +12,14 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 }
 
+# Kazeros has different boss names per difficulty for gate 2, and the JS mapping is wrong.
+KAZEROS_OVERRIDE = {
+    ("Abyss Lord Kazeros", "Hard"): ("Kazeros", 1),
+    ("Abyss Lord Kazeros", "Normal"): ("Kazeros", 1),
+    ("Death Incarnate Kazeros", "Hard"): ("Kazeros", 2),
+    ("Archdemon Kazeros", "Normal"): ("Kazeros", 2),
+}
+
 # Shared session for connection pooling
 _session = requests.Session()
 _session.headers.update(HEADERS)
@@ -134,10 +142,12 @@ def extract_logs(html, boss_to_raid):
         return []
     bosses = re.findall(r'boss:"([^"]+)"', logs_text)
     timestamps = re.findall(r"timestamp:(\d+)", logs_text)
+    difficulties = re.findall(r'difficulty:"([^"]+)"', logs_text)
     entries = []
-    for boss, ts in zip(bosses, timestamps):
+    for boss, ts, difficulty in zip(bosses, timestamps, difficulties):
         ts_ms = int(ts)
-        raid_info = boss_to_raid.get(boss)
+        override = KAZEROS_OVERRIDE.get((boss, difficulty))
+        raid_info = override or boss_to_raid.get(boss)
         entries.append({
             "boss": boss,
             "raid_name": raid_info[0] if raid_info else boss,
