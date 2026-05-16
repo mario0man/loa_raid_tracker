@@ -256,7 +256,8 @@ def print_raid_logs(main_character):
     char_raid_status = {}
     for key in raid_has_logs:
         done = gates_this_week.get(key, set())
-        if len(done) == len(char_raid_gates[key]):
+        all_gates = char_raid_gates[key]
+        if len(done) == len(all_gates) or (done and max(done) == max(all_gates)):
             char_raid_status[key] = "✅"
         else:
             char_raid_status[key] = "❌"
