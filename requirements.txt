@@ -1,2 +1,4 @@
+extra-streamlit-components
 requests
 streamlit
+streamlit-local-storage
