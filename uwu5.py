@@ -58,49 +58,90 @@ def fetch_page(path):
 
 
 def _fetch_boss_to_raid():
-    """Fetch the boss->raid mapping from lostark.bible's SvelteKit JS."""
-    # 1. Get any page to find the app entry JS filename
-    resp = _session.get(f"{BASE_URL}/character/NA/test/logs", timeout=60)
-    resp.encoding = "utf-8"
-    app_match = re.search(r'entry/app\.([^"]+\.js)', resp.text)
+    """Fetch the boss->raid mapping from lostark.bible's SvelteKit JS.
+
+    The mapping lives in a hashed module file whose filename changes on every
+    site rebuild and is loaded dynamically by the client router, so the logs
+    page HTML only preload-links ``entry/app.js``. We therefore crawl the JS
+    import graph breadth-first from ``app.js`` (the stable root entry) and stop
+    as soon as we hit the module whose contents match the distinctive
+    boss->raid shape ``"Boss, Title":`RaidName Gx``` — the real mapping has
+    dozens of such entries, every other module has fewer than five.
+
+    Background: the mapping used to live inline in the logs route node
+    (``nodes/18``) as ``raidname:[`boss`,`boss`]``. The site later moved it into
+    a standalone data chunk and inverted it to a boss->raid dict, so the old
+    hardcoded ``nodes/18`` parse silently returned an empty mapping (leaving
+    only the explicitly-registered raids).
+    """
+    page = fetch_page("/character/NA/test/logs")
+    if not page:
+        return {}, []
+    app_match = re.search(r'/_app/immutable/entry/app\.([A-Za-z0-9_-]+\.js)', page)
     if not app_match:
         return {}, []
-    app_url = f"{BASE_URL}/_app/immutable/entry/app.{app_match.group(1)}"
 
-    # 2. Fetch the app JS and find node 18's filename
-    app_js = _session.get(app_url, timeout=60).text
-    node18_match = re.search(r'nodes/18\.([^"]+\.js)', app_js)
-    if not node18_match:
+    # boss->raid entries look like: "Akkan, Lord of Death":`Aegir G1`
+    boss_raid_re = re.compile(r'"([^"]+)":`([^`]*?)\s+G(\d+)`')
+    # The canonical mapping has dozens of entries; incidental matches elsewhere
+    # are sparse (<5), so this threshold cleanly identifies the mapping module.
+    MAPPING_THRESHOLD = 8
+
+    def _module_refs(js):
+        """Immutable module paths (chunks/nodes/entry) referenced by a module.
+
+        Handles both absolute (``/_app/immutable/chunks/x.js``) and relative
+        (``../chunks/x.js``) import specifiers.
+        """
+        refs = set(re.findall(
+            r'/_app/immutable/((?:chunks|nodes|entry)/[A-Za-z0-9_-]+\.js)', js
+        ))
+        for prefix in ("chunks", "nodes", "entry"):
+            for name in re.findall(
+                rf'(?:\./|\.\./)+{prefix}/([A-Za-z0-9_-]+\.js)', js
+            ):
+                refs.add(f"{prefix}/{name}")
+        return refs
+
+    def _fetch_module(path):
+        try:
+            return _session.get(
+                f"{BASE_URL}/_app/immutable/{path}", timeout=60
+            ).text
+        except requests.RequestException:
+            return ""
+
+    best_pairs = []
+    visited = set()
+    frontier = [f"entry/app.{app_match.group(1)}"]
+    while frontier and len(best_pairs) < MAPPING_THRESHOLD and len(visited) <= 150:
+        level = [p for p in frontier if p not in visited]
+        visited.update(level)
+        next_refs = []
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(_fetch_module, p) for p in level]
+            for future in as_completed(futures):
+                js = future.result()
+                pairs = boss_raid_re.findall(js)
+                if len(pairs) > len(best_pairs):
+                    best_pairs = pairs
+                next_refs.extend(_module_refs(js))
+        frontier = [r for r in next_refs if r not in visited]
+
+    if not best_pairs:
         return {}, []
-    node18_url = f"{BASE_URL}/_app/immutable/nodes/18.{node18_match.group(1)}"
-
-    # 3. Fetch node 18 and parse the raid mapping
-    node18_js = _session.get(node18_url, timeout=60).text
-
-    start = node18_js.find("={")
-    if start == -1:
-        return {}, []
-    start += 1
-    depth = 1
-    end = start
-    for i in range(start + 1, len(node18_js)):
-        if node18_js[i] == "{":
-            depth += 1
-        elif node18_js[i] == "}":
-            depth -= 1
-            if depth == 0:
-                end = i
-                break
-    mapping_text = node18_js[start + 1 : end]
 
     boss_to_raid = {}
     raid_order = []
-    for raid_match in re.finditer(r'(.+?):\[(.*?)\]', mapping_text):
-        raid_name = raid_match.group(1).strip().strip('`",')
-        raid_order.append(raid_name)
-        bosses_text = raid_match.group(2)
-        for gate_num, boss_match in enumerate(re.finditer(r'`([^`]+)`', bosses_text), 1):
-            boss_to_raid[boss_match.group(1)] = (raid_name, gate_num)
+    seen_raids = set()
+    for boss, raid_display, gate in best_pairs:
+        # raid_display is the value minus the trailing `` G<gate>``. Kept
+        # verbatim (including any "Act N:" prefix) so distinct raids such as
+        # "Act 2: Brelshaza" are never merged into the plain raid.
+        if raid_display not in seen_raids:
+            seen_raids.add(raid_display)
+            raid_order.append(raid_display)
+        boss_to_raid[boss] = (raid_display, int(gate))
     return boss_to_raid, raid_order
 
 
