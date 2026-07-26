@@ -32,6 +32,20 @@ local_storage = LocalStorage()
 PINNED_KEY = "loa_pinned_rosters"
 MAX_PINS = 10
 
+def raid_column_width(name, char_px=8, pad_px=20, floor_px=60):
+    """Pick a column width (CSS px) for a raid header so it fits without
+    clipping, wrapping multi-word names onto multiple lines.
+
+    Raid cells only hold a single icon, so the header drives the column width.
+    We size to the longest whitespace-separated word plus padding: a one-word
+    name stays on a single line, while a multi-word name like
+    "Horizon Cathedral" wraps. char_px is a generous per-character estimate at
+    font-size 14px so the longest word never clips. This is a heuristic —
+    Python can't measure the browser's rendered text width.
+    """
+    longest = max(name.split(), key=len)
+    return f"{max(len(longest) * char_px + pad_px, floor_px)}px"
+
 
 def load_pinned():
     """Load pinned roster names from browser localStorage."""
@@ -347,8 +361,24 @@ if st.session_state.get("accent_data"):
             ]
             rows.append(row)
 
-        # Build HTML table to avoid pyarrow dependency
-        html = "<table style='width:100%; border-collapse:collapse; font-size:14px;'>"
+        # Dynamically size each raid column to its header so multi-word names
+        # wrap automatically (cells only hold a single icon, so the header
+        # drives the width). Character/iLvl stay on auto sizing. Raid columns
+        # start at index 2 (after "Character" and "iLvl").
+        raid_col_widths = {i + 2: raid_column_width(r) for i, r in enumerate(raid_names)}
+
+        # Build HTML table to avoid pyarrow dependency.
+        # NOTE: no width:100% — with explicit raid column widths set below,
+        # forcing 100% would dump all the slack into the unpinned Character /
+        # iLvl columns and balloon them. Letting the table shrink to content
+        # keeps those columns compact.
+        html = "<table style='border-collapse:collapse; font-size:14px;'>"
+        if raid_col_widths:
+            html += "<colgroup>"
+            for i in range(len(header)):
+                w = raid_col_widths.get(i)
+                html += f"<col{f' style=\"width:{w};\"' if w else ''}>"
+            html += "</colgroup>"
         html += "<thead><tr>"
         for h in header:
             html += f"<th style='border-bottom:2px solid #444; padding:6px 10px; text-align:left;'>{h}</th>"
