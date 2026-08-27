@@ -53,6 +53,28 @@ def raid_column_width(name, num_gates=1, char_px=8, pad_px=12, floor_px=60, gate
     return f"{max(header_w, gates_w, floor_px)}px"
 
 
+def _percentile_color(n):
+    """Text color for a displayed percentile, matching lostark.bible's badge tiers.
+
+    Copied from the site's badge component (the tier function over the floored
+    percentile in its logs-page JS chunk): 100 gold, 99 pink, 95+ orange,
+    75+ purple, 50+ blue, 25+ green, else grey.
+    """
+    if n >= 100:
+        return "#dcc999"
+    if n >= 99:
+        return "#FF69B4"
+    if n >= 95:
+        return "#FFA441"
+    if n >= 75:
+        return "#ce84ff"
+    if n >= 50:
+        return "#0096ff"
+    if n >= 25:
+        return "#3dd351"
+    return "#afafaf"
+
+
 # Class icons extracted from lostark.bible's bundled class-icon component
 # (inline SVGs — the site has no image URLs for them; see _class_icons/).
 # One <id>.svg per internal class id, keyed by the raw roster class_id.
@@ -360,6 +382,10 @@ if st.session_state.get("_pin_search"):
     pin_name = st.session_state.pop("_pin_search")
     st.session_state.pop("accent_matches", None)
     st.session_state.pop("accent_data", None)
+    # A new roster is loading — reset the previous-reset toggle to default.
+    # Set (not pop): a pop only resets the script-side value; the browser's
+    # switch stays flipped ON and re-syncs its old state on the next rerun.
+    st.session_state["_show_previous_reset"] = False
 
     with st.spinner(f"Fetching data for {pin_name}..."):
         roster = get_roster(pin_name)
@@ -379,6 +405,9 @@ if search_clicked and character:
     # Clear stale state from previous searches
     st.session_state.pop("accent_matches", None)
     st.session_state.pop("accent_data", None)
+    # A new roster is loading — reset the previous-reset toggle to default
+    # (set, not pop — see the pinned-roster block for why).
+    st.session_state["_show_previous_reset"] = False
     character = character[0].upper() + character[1:].lower()
 
     def _handle_found(found):
@@ -432,6 +461,9 @@ if st.session_state.get("accent_matches"):
         main_ilvl = next((ilvl for cn, ilvl, _cls, _cid in m_roster if cn == m_name), "0")
         if st.button(f"{m_name}  —  iLvl {main_ilvl}  —  {len(m_roster)} characters", key=f"accent_{m_name}"):
             del st.session_state["accent_matches"]
+            # A new roster is loading — reset the previous-reset toggle to default
+            # (set, not pop — see the pinned-roster block for why).
+            st.session_state["_show_previous_reset"] = False
             st.session_state["accent_data"] = build_table(m_name, roster=m_roster)
             st.session_state["_resolved_name"] = m_name
             st.rerun()
@@ -447,14 +479,15 @@ if st.session_state.get("accent_data"):
         show_previous = st.toggle(
             "Show previous reset",
             value=False,
+            key="_show_previous_reset",
             help="Switch the matrix to the weekly-reset window before the current one.",
         )
         view = data["prev"] if show_previous else data
-        # Wording that tracks the selected window: "this week"/"last week" for
-        # clears, and a miss label that stays accurate for the previous window
-        # (a gate not cleared then may have been cleared before OR after it).
-        week_short = "last week" if show_previous else "this week"
-        miss_label = "cleared in a different week" if show_previous else "cleared before this week"
+        # Wording that tracks the selected window: "this reset"/"previous reset"
+        # for clears, and a miss label that stays accurate for the previous
+        # window (a gate not cleared then may have been cleared before OR after it).
+        reset_short = "previous reset" if show_previous else "this reset"
+        miss_label = "cleared in a different reset" if show_previous else "cleared before this reset"
 
         window_start = data["prev_reset_time"] if show_previous else data["reset_time"]
         window_end = data["reset_time"] if show_previous else data["now_pacific"]
@@ -471,26 +504,32 @@ if st.session_state.get("accent_data"):
         def _gate_icon(status, gate, pct=None, pct_kind=None):
             """Render a single gate's number + status marker with a hover tooltip.
 
-            A gate cleared in the selected week with a non-null performance
-            percentile shows that percentile as a green number instead of the
-            ✅ emoji — the same value lostark.bible badges for the log (damage
-            percentile for DPS, contribution percentile for supports). A null
-            percentile or a gate marked cleared without its own log entry
-            keeps the ✅. Tooltip wording (week_short / miss_label) tracks the
+            A gate cleared in the selected reset window with a non-null performance
+            percentile shows that percentile as a number instead of the ✅ emoji —
+            the same value lostark.bible badges for the log (damage percentile for
+            DPS, contribution percentile for supports), colored with the site's own
+            badge tier colors (see _percentile_color). The small gate-number prefix
+            keeps its status color (green here) regardless of the tier color. A
+            null percentile or a gate marked cleared without its own log entry
+            keeps the ✅. Tooltip wording (reset_short / miss_label) tracks the
             window currently shown.
             """
             if status == "✅" and pct is not None:
-                n = round(pct * 100)
+                # The site floors the percentile for its badge (Math.floor in its
+                # badge component), so floor here too — rounding could land a
+                # 99.5th on the wrong side of the 99/100 tier boundary.
+                n = int(pct * 100)
                 kind_txt = " (contribution)" if pct_kind == "contribution" else ""
-                label = f"Gate {gate}: cleared {week_short} — {n}th percentile{kind_txt}"
+                label = f"Gate {gate}: cleared {reset_short} — {n}th percentile{kind_txt}"
                 return (
                     f"<span title='{label}' "
-                    f"style='display:inline-block; margin-right:5px; color:#4caf50; font-weight:600;'>"
-                    f"<span style='font-size:10px; opacity:.6; margin-right:3px;'>{gate}</span>{n}"
+                    f"style='display:inline-block; margin-right:5px;'>"
+                    f"<span style='font-size:10px; opacity:.6; margin-right:3px; color:#4caf50;'>{gate}</span>"
+                    f"<span style='color:{_percentile_color(n)}; font-weight:600;'>{n}</span>"
                     f"</span>"
                 )
             if status == "✅":
-                label, color = f"Gate {gate}: cleared {week_short}", "#4caf50"
+                label, color = f"Gate {gate}: cleared {reset_short}", "#4caf50"
             elif status == "❌":
                 label, color = f"Gate {gate}: {miss_label}", "#f44336"
             else:
@@ -569,7 +608,7 @@ if st.session_state.get("accent_data"):
         st.markdown(html, unsafe_allow_html=True)
 
         st.markdown(
-            f"**Completed {week_short}:** {view['completed']}/{data['total_cells']} "
+            f"**Completed {reset_short}:** {view['completed']}/{data['total_cells']} "
             f"(across {data['total_chars']} characters, {data['total_raids']} raids)"
         )
 
@@ -580,10 +619,10 @@ if st.session_state.get("accent_data"):
             unsafe_allow_html=True,
         )
         st.markdown(
-            f"<span style='color:#4caf50; font-weight:600;'>95</span> Gate cleared {week_short} — percentile &nbsp;&nbsp; "
-            f"<span style='color:#4caf50'>✅</span> Gate cleared {week_short} (no percentile logged) &nbsp;&nbsp; "
-            f"<span style='color:#f44336'>❌</span> Gate {miss_label} &nbsp;&nbsp; "
-            f"<span style='color:#666'>➖</span> Gate not cleared (no log)",
+            f"<span style='color:{_percentile_color(95)}; font-weight:600;'>95</span> Gate cleared {reset_short} w/ percentile<br>"
+            f"<span style='color:#4caf50'>✅</span> Gate cleared {reset_short}, no percentile<br>"
+            f"<span style='color:#f44336'>❌</span> Gate not cleared {reset_short}<br>"
+            f"<span style='color:#666'>➖</span> No logs for this gate",
             unsafe_allow_html=True,
         )
 
